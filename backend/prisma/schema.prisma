@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  clerkId           String   @unique
+  role              Role?
+  recruiterProfile  RecruiterProfile?
+  candidateProfile  CandidateProfile?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model RecruiterProfile {
+  id        String  @id @default(cuid())
+  user      User    @relation(fields: [userId], references: [id])
+  userId    String  @unique
+  company   String
+  industry  String?
+  jobs      Job[]
+}
+
+model CandidateProfile {
+  id          String  @id @default(cuid())
+  user        User    @relation(fields: [userId], references: [id])
+  userId      String  @unique
+  education   String?
+  experience  String?
+  skills      String?
+  applications Application[]
+}
+
+enum Role {
+  RECRUITER
+  CANDIDATE
+}
+
+model Job {
+  id                  String   @id @default(cuid())
+  title               String
+  description         String
+  recruiter           RecruiterProfile @relation(fields: [recruiterId], references: [id])
+  recruiterId         String
+  applications        Application[]
+  interviewQuestions  InterviewQuestion[]
+  interviewContext    String?
+  customQuestions     String?  // Custom questions for AI interviewer
+  interviewEndDate    DateTime?
+  screenshotInterval  Int      @default(30) // seconds
+  createdAt           DateTime @default(now())
+  location            String
+  type                String
+}
+
+model InterviewQuestion {
+  id      String @id @default(cuid())
+  job     Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId   String
+  question String
+  createdAt DateTime @default(now())
+}
+
+model Application {
+  id            String   @id @default(cuid())
+  candidate     CandidateProfile @relation(fields: [candidateId], references: [id])
+  candidateId   String
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId         String
+  interview     Interview?
+  status        ApplicationStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+}
+
+enum ApplicationStatus {
+  PENDING
+  INTERVIEW_SCHEDULED
+  INTERVIEW_COMPLETED
+  SHORTLISTED
+  REJECTED
+}
+
+model Interview {
+  id                String   @id @default(cuid())
+  application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  applicationId     String   @unique
+  scheduledAt       DateTime
+  actualStartedAt   DateTime?
+  endedAt           DateTime?
+  score             InterviewScore?
+  recordings        InterviewRecording[]
+  screenshots       Screenshot[]
+  aiSummary         String?
+  uniqueLink        String   @unique
+  isActive          Boolean  @default(false)
+  aiTranscript      String?
+  strengths         String?
+  weaknesses        String?
+  overallRating     Float?
+}
+
+model InterviewRecording {
+  id          String    @id @default(cuid())
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewId String
+  audioUrl    String?
+  videoUrl    String?
+  recordingType RecordingType
+  createdAt   DateTime  @default(now())
+}
+
+model Screenshot {
+  id          String    @id @default(cuid())
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewId String
+  imageUrl    String
+  takenAt     DateTime  @default(now())
+}
+
+enum RecordingType {
+  AUDIO
+  VIDEO
+  SCREEN
+}
+
+model InterviewScore {
+  id               String   @id @default(cuid())
+  interview        Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewId      String   @unique
+  communicationScore Float
+  technicalScore   Float
+  problemSolvingScore Float
+  culturalFitScore Float
+  totalScore       Float
+  details          Json
+  createdAt        DateTime @default(now())
+}
