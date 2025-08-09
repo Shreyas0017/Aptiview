@@ -155,9 +155,8 @@ export function MainNavigation() {
             <SignedIn>
               <Link
                 href="#"
-                onClick={handleDashboardRedirect}
+                onClick={(e) => { handleDashboardRedirect(e); setMobileMenuOpen(false); }}
                 className="block text-gray-600 hover:text-gray-900 transition-colors font-medium text-sm dark:text-gray-400 dark:hover:text-gray-50"
-                onClick={() => setMobileMenuOpen(false)}
               >
                 Dashboard
               </Link>
