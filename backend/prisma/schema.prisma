@@ -75,6 +75,8 @@ model Application {
   jobId         String
   interview     Interview?
   status        ApplicationStatus @default(PENDING)
+  resumeUrl     String?
+  coverLetter   String?
   createdAt     DateTime @default(now())
 }
 
