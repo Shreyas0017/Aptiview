@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Checkbox } from "@/components/ui/checkbox"
+// import { Checkbox } from "@/components/ui/checkbox" // Temporarily disabled due to React 19 infinite loop issue
 import { Slider } from "@/components/ui/slider"
 import { Badge } from "@/components/ui/badge"
 import { Stepper } from "@/components/ui/stepper"
@@ -62,6 +62,150 @@ type TemplateCustomizationForm = z.infer<typeof templateCustomizationSchema>
 
 const steps = ["Select Template", "Customize", "Select Jobs"]
 
+// Scoring total component to prevent infinite loops
+const ScoringTotal = ({ form }: { form: any }) => {
+  const communicationWeight = form.watch("scoring.communicationWeight")
+  const technicalWeight = form.watch("scoring.technicalWeight")
+  const problemSolvingWeight = form.watch("scoring.problemSolvingWeight")
+  const culturalFitWeight = form.watch("scoring.culturalFitWeight")
+  
+  const total = React.useMemo(() => {
+    return (communicationWeight || 0) + 
+           (technicalWeight || 0) + 
+           (problemSolvingWeight || 0) + 
+           (culturalFitWeight || 0)
+  }, [communicationWeight, technicalWeight, problemSolvingWeight, culturalFitWeight])
+  
+  const isValid = Math.abs(total - 100) <= 5
+  
+  return (
+    <div className={`text-sm font-medium ${isValid ? 'text-green-600' : 'text-red-600'}`}>
+      Total: {total}% 
+      {!isValid && (
+        <span className="text-xs text-red-500 ml-1">(should be ~100%)</span>
+      )}
+    </div>
+  )
+}
+
+// Custom Checkbox component to avoid Radix UI infinite loop in React 19
+const CustomCheckbox = React.memo(({ 
+  checked, 
+  onCheckedChange,
+  className = "",
+  ...props 
+}: { 
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  className?: string
+}) => {
+  const handleChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    e.stopPropagation()
+    onCheckedChange(e.target.checked)
+  }, [onCheckedChange])
+
+  const handleClick = React.useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    onCheckedChange(!checked)
+  }, [checked, onCheckedChange])
+
+  return (
+    <div className={`relative inline-flex items-center ${className}`} data-checkbox>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={handleChange}
+        className="sr-only"
+        {...props}
+      />
+      <div 
+        className={`
+          flex h-4 w-4 items-center justify-center rounded border-2 transition-colors cursor-pointer
+          ${checked 
+            ? 'bg-blue-600 border-blue-600 text-white' 
+            : 'border-gray-300 hover:border-gray-400'
+          }
+        `}
+        onClick={handleClick}
+      >
+        {checked && (
+          <Check className="h-3 w-3" />
+        )}
+      </div>
+    </div>
+  )
+})
+
+// Memoized JobsList component to prevent infinite loops
+const JobsList = React.memo(({ 
+  jobs, 
+  selectedJobs, 
+  onJobToggle 
+}: { 
+  jobs: Job[]
+  selectedJobs: string[]
+  onJobToggle: (newSelection: string[]) => void
+}) => {
+  const handleJobToggle = React.useCallback((jobId: string) => {
+    const newSelection = selectedJobs.includes(jobId)
+      ? selectedJobs.filter((id: string) => id !== jobId)
+      : [...selectedJobs, jobId]
+    onJobToggle(newSelection)
+  }, [selectedJobs, onJobToggle])
+
+  const handleCardClick = React.useCallback((e: React.MouseEvent, jobId: string) => {
+    // Prevent double-triggering if clicking on checkbox
+    if ((e.target as HTMLElement).closest && (e.target as HTMLElement).closest('[data-checkbox]')) return;
+    handleJobToggle(jobId)
+  }, [handleJobToggle])
+
+  return (
+    <div className="space-y-3">
+      {jobs.map((job) => (
+        <Card
+          key={job.id}
+          className={`cursor-pointer transition-all hover:shadow-md ${
+            selectedJobs.includes(job.id)
+              ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50'
+              : 'border-gray-200'
+          }`}
+          onClick={(e) => handleCardClick(e, job.id)}
+        >
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <CustomCheckbox
+                  checked={selectedJobs.includes(job.id)}
+                  onCheckedChange={() => handleJobToggle(job.id)}
+                />
+                <div>
+                  <h4 className="font-medium text-gray-900">{job.title}</h4>
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <span>{job.location}</span>
+                    <span>•</span>
+                    <span>{job.type}</span>
+                    {job.applicantsCount !== undefined && (
+                      <>
+                        <span>•</span>
+                        <span>{job.applicantsCount} applicants</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {selectedJobs.includes(job.id) && (
+                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500">
+                  <Check className="h-4 w-4 text-white" />
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+})
+
 interface TemplateCustomizationWizardProps {
   onComplete?: () => void
   onCancel?: () => void
@@ -83,6 +227,7 @@ export default function TemplateCustomizationWizard({
   const [templatesLoading, setTemplatesLoading] = useState(true)
   const [jobsLoading, setJobsLoading] = useState(true)
   const [newQuestion, setNewQuestion] = useState("")
+  const hasPreSelectedRef = React.useRef(false)
   
   const { getToken } = useAuth()
   const router = useRouter()
@@ -113,13 +258,19 @@ export default function TemplateCustomizationWizard({
 
   // Pre-select job if provided
   useEffect(() => {
-    if (preSelectedJobId && jobs.length > 0) {
+    if (preSelectedJobId && jobs.length > 0 && !hasPreSelectedRef.current) {
       const currentSelected = form.getValues("selectedJobs")
       if (!currentSelected.includes(preSelectedJobId)) {
-        form.setValue("selectedJobs", [preSelectedJobId])
+        form.setValue("selectedJobs", [preSelectedJobId], { shouldValidate: false })
+        hasPreSelectedRef.current = true
       }
     }
-  }, [preSelectedJobId, jobs, form])
+  }, [preSelectedJobId, jobs.length])
+
+  // Reset the ref when preSelectedJobId changes
+  useEffect(() => {
+    hasPreSelectedRef.current = false
+  }, [preSelectedJobId])
 
   const fetchTemplates = async () => {
     try {
@@ -478,16 +629,7 @@ export default function TemplateCustomizationWizard({
               ))}
             </div>
             
-            <div className={`text-sm font-medium ${
-              Math.abs(Object.values(form.watch("scoring")).reduce((a, b) => a + b, 0) - 100) <= 5
-                ? 'text-green-600' 
-                : 'text-red-600'
-            }`}>
-              Total: {Object.values(form.watch("scoring")).reduce((a, b) => a + b, 0)}% 
-              {Math.abs(Object.values(form.watch("scoring")).reduce((a, b) => a + b, 0) - 100) > 5 && (
-                <span className="text-xs text-red-500 ml-1">(should be ~100%)</span>
-              )}
-            </div>
+            <ScoringTotal form={form} />
           </div>
 
           <FormField
@@ -591,54 +733,11 @@ export default function TemplateCustomizationWizard({
           render={({ field }) => (
             <FormItem>
               <FormControl>
-                <div className="space-y-3">
-                  {jobs.map((job) => (
-                    <Card
-                      key={job.id}
-                      className={`cursor-pointer transition-all hover:shadow-md ${
-                        field.value.includes(job.id)
-                          ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50'
-                          : 'border-gray-200'
-                      }`}
-                      onClick={() => {
-                        const newSelection = field.value.includes(job.id)
-                          ? field.value.filter(id => id !== job.id)
-                          : [...field.value, job.id]
-                        field.onChange(newSelection)
-                      }}
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <Checkbox
-                              checked={field.value.includes(job.id)}
-                              onCheckedChange={() => {}} // Controlled by parent click
-                            />
-                            <div>
-                              <h4 className="font-medium text-gray-900">{job.title}</h4>
-                              <div className="flex items-center gap-2 text-sm text-gray-600">
-                                <span>{job.location}</span>
-                                <span>•</span>
-                                <span>{job.type}</span>
-                                {job.applicantsCount !== undefined && (
-                                  <>
-                                    <span>•</span>
-                                    <span>{job.applicantsCount} applicants</span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          {field.value.includes(job.id) && (
-                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500">
-                              <Check className="h-4 w-4 text-white" />
-                            </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
+                <JobsList 
+                  jobs={jobs}
+                  selectedJobs={field.value}
+                  onJobToggle={field.onChange}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>

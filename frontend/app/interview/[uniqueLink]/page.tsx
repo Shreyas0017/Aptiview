@@ -140,6 +140,14 @@ export default function VoiceInterviewPage() {
   useEffect(() => { faceCountRef.current = faceCount; }, [faceCount]);
   // WebGazer EMA smoothing
   const wgEmaRef = useRef<{ inited: boolean; x: number; y: number }>({ inited: false, x: 0, y: 0 });
+  
+  // Eye movement tracking for WebGazer
+  const eyeMovementRef = useRef<{
+    positions: Array<{ x: number; y: number; timestamp: number; distance: number }>;
+    lastPosition: { x: number; y: number; timestamp: number };
+    movementDistance: number;
+    warningCount: number;
+  } | null>(null);
 
   // Ensure TFJS backend is initialized once with fallbacks
   const ensureTFReady = useCallback(async () => {
@@ -208,25 +216,44 @@ export default function VoiceInterviewPage() {
 
           case 'audio-chunk':
             // Play AI audio response
+            console.log('Received audio-chunk, data length:', message.data?.length);
             if (audioRef.current && message.data) {
               try {
+                console.log('Processing audio chunk...');
                 // Convert base64 to blob
                 const audioData = Uint8Array.from(atob(message.data), c => c.charCodeAt(0));
                 const audioBlob = new Blob([audioData], { type: 'audio/mpeg' });
                 const audioUrl = URL.createObjectURL(audioBlob);
                 
+                console.log('Created audio URL:', audioUrl);
                 audioRef.current.src = audioUrl;
+                
+                // Add more event listeners for debugging
+                audioRef.current.onloadstart = () => console.log('Audio loading started');
+                audioRef.current.oncanplay = () => console.log('Audio can play');
+                audioRef.current.onplay = () => console.log('Audio started playing');
+                audioRef.current.onpause = () => console.log('Audio paused');
+                audioRef.current.onerror = (e) => console.error('Audio error:', e);
+                
                 audioRef.current.onloadeddata = () => {
-                  audioRef.current?.play().catch(console.error);
+                  console.log('Audio loaded successfully, attempting to play...');
+                  audioRef.current?.play().then(() => {
+                    console.log('Audio play succeeded');
+                  }).catch((error) => {
+                    console.error('Audio play failed:', error);
+                  });
                 };
                 
                 // Clean up URL after playing
                 audioRef.current.onended = () => {
+                  console.log('Audio playback ended');
                   URL.revokeObjectURL(audioUrl);
                 };
               } catch (error) {
-                console.error('Error playing audio:', error);
+                console.error('Error processing audio chunk:', error);
               }
+            } else {
+              console.warn('No audio ref or no data in audio-chunk message');
             }
             break;
 
@@ -1300,21 +1327,35 @@ export default function VoiceInterviewPage() {
 
   // Start WebGazer and hook its gaze listener for screen-based eye movement detection
   const startWebGazer = useCallback(async () => {
-    if (wgEnabledRef.current) return;
+    if (wgEnabledRef.current) {
+      console.log('WebGazer already enabled, skipping start');
+      return;
+    }
+    
+    console.log('Starting WebGazer initialization...');
     try {
       const webgazer = (await import('webgazer')).default as any;
-      if (!webgazer) return;
+      if (!webgazer) {
+        console.error('WebGazer module not loaded');
+        return;
+      }
+      
+      console.log('WebGazer module loaded, configuring...');
       // Hide internal UI
       try { webgazer.showVideo(false); } catch {}
       try { webgazer.showFaceOverlay(false); } catch {}
       try { webgazer.showPredictionPoints(false); } catch {}
       try { webgazer.params.screenVideoGL = null; } catch {}
       webgazer.setRegression('ridge');
+      
+      console.log('Starting WebGazer...');
       // Start
       await webgazer.begin();
       webGazerRef.current = webgazer;
       wgEnabledRef.current = true;
       setUsingWebGazer(true);
+      
+      console.log('WebGazer started successfully, setting up eye movement tracking...');
       // Quick calibration: capture center for ~1s
       wgCalibRef.current = { done: false, startTs: performance.now(), cx: 0.5, cy: 0.5 };
       wgOffCounterRef.current = 0;
@@ -1325,15 +1366,23 @@ export default function VoiceInterviewPage() {
         const x = data.x; // pixels
         const y = data.y;
         if (!isFinite(x) || !isFinite(y)) return;
+        
+        // Debug: Log WebGazer data reception
+        if (Math.random() < 0.01) { // Log 1% of samples to avoid spam
+          console.log(`WebGazer data received: x=${x.toFixed(2)}, y=${y.toFixed(2)}, faces=${faceCountRef.current}`);
+        }
+        
         // If face not present, ignore WebGazer samples
         if (faceCountRef.current < 1) {
           wgOffCounterRef.current = 0;
           return;
         }
+        
         let nx = x / Math.max(1, window.innerWidth);
         let ny = y / Math.max(1, window.innerHeight);
-  // EMA smoothing (higher alpha reacts faster)
-  const alpha = 0.5;
+        
+        // EMA smoothing (moderate alpha for stability)
+        const alpha = 0.3;
         if (!wgEmaRef.current.inited) {
           wgEmaRef.current = { inited: true, x: nx, y: ny };
         } else {
@@ -1342,42 +1391,113 @@ export default function VoiceInterviewPage() {
         }
         nx = wgEmaRef.current.x;
         ny = wgEmaRef.current.y;
-        const calib = wgCalibRef.current;
+        
         const now = performance.now();
-        if (calib && !calib.done) {
-          // assume user looks center at start
-          if (now - calib.startTs > 1000) {
-            calib.cx = nx; calib.cy = ny; calib.done = true;
-          }
-          setGazeOff(false);
-          setProctorWarning(null);
-          wgOffCounterRef.current = 0;
+        
+        // Initialize eye movement tracking
+        if (!eyeMovementRef.current) {
+          eyeMovementRef.current = {
+            positions: [],
+            lastPosition: { x: nx, y: ny, timestamp: now },
+            movementDistance: 0,
+            warningCount: 0
+          };
           return;
         }
-        const cx = calib?.cx ?? 0.5;
-        const cy = calib?.cy ?? 0.5;
-  const dx = Math.abs(nx - cx);
-  const dy = Math.abs(ny - cy);
-  // More sensitive thresholds to detect smaller deviations
-  const off = dx > 0.08 || dy > 0.11; // tightened from 0.12/0.15
-        if (off) wgOffCounterRef.current++; else wgOffCounterRef.current = Math.max(0, wgOffCounterRef.current - 1); // Gradual decay
-  const nowOff = wgOffCounterRef.current > 7; // react faster (~0.6-1.0s depending on callback rate)
+        
+        const lastPos = eyeMovementRef.current.lastPosition;
+        const timeDiff = now - lastPos.timestamp;
+        
+        // Only process if enough time has passed (avoid noise)
+        if (timeDiff < 50) return; // Reduced to 50ms for more sensitive detection
+        
+        // Calculate distance moved since last position
+        const dx = nx - lastPos.x;
+        const dy = ny - lastPos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Debug logging for movement detection
+        if (distance > 0.01) {
+          console.log(`Eye movement detected: distance=${distance.toFixed(4)}, pos=(${nx.toFixed(3)}, ${ny.toFixed(3)})`);
+        }
+        
+        // Update position history (keep last 20 positions for better analysis)
+        eyeMovementRef.current.positions.push({
+          x: nx,
+          y: ny,
+          timestamp: now,
+          distance: distance
+        });
+        
+        // Keep only last 20 positions (last ~1 second of data)
+        if (eyeMovementRef.current.positions.length > 20) {
+          eyeMovementRef.current.positions.shift();
+        }
+        
+        // Calculate total movement in the last 500ms (shorter window for faster detection)
+        const recentPositions = eyeMovementRef.current.positions.filter(
+          pos => now - pos.timestamp < 500
+        );
+        
+        const totalMovement = recentPositions.reduce((sum, pos) => sum + pos.distance, 0);
+        eyeMovementRef.current.movementDistance = totalMovement;
+        
+        // Much more sensitive thresholds
+        const MOVEMENT_THRESHOLD = 0.05; // Reduced from 0.15 to 0.05
+        const EXCESSIVE_MOVEMENT_THRESHOLD = 0.1; // Reduced from 0.25 to 0.1
+        
+        const isExcessiveMovement = totalMovement > MOVEMENT_THRESHOLD;
+        const isSevereMovement = totalMovement > EXCESSIVE_MOVEMENT_THRESHOLD;
+        
+        // Debug logging for threshold checking
+        if (totalMovement > 0.01) {
+          console.log(`Total movement: ${totalMovement.toFixed(4)}, threshold: ${MOVEMENT_THRESHOLD}, excessive: ${isExcessiveMovement}`);
+        }
+        
+        // Update warning state (more sensitive trigger)
+        if (isExcessiveMovement) {
+          wgOffCounterRef.current++;
+        } else {
+          wgOffCounterRef.current = Math.max(0, wgOffCounterRef.current - 2); // Faster decay
+        }
+        
+        const nowOff = wgOffCounterRef.current > 2; // Trigger after just 2 detections instead of 5
         const wasOff = gazeOff;
+        
         if (nowOff !== wasOff) {
           setGazeOff(nowOff);
-          // Coordinate with head movement warnings
+          console.log(`Eye movement warning state changed: ${nowOff}, movement: ${totalMovement.toFixed(4)}`);
+          
           if (nowOff && !headOffActiveRef.current) {
-            setProctorWarning('Please keep your eyes on the screen.');
+            if (isSevereMovement) {
+              setProctorWarning('🚨 Excessive eye movement detected! Please maintain steady focus.');
+              eyeMovementRef.current.warningCount++;
+              console.log('SEVERE eye movement warning triggered');
+            } else {
+              setProctorWarning('⚠️ Please minimize eye movement and maintain focus.');
+              console.log('Standard eye movement warning triggered');
+            }
           } else if (!nowOff && !headOffActiveRef.current) {
             setProctorWarning(null);
           }
+          
           if (!wasOff && nowOff) {
-            captureScreenshot('gaze-off-screen');
+            const eventType = isSevereMovement ? 'excessive-eye-movement' : 'irregular-eye-movement';
+            captureScreenshot(eventType);
             if (wsRef.current?.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({ type: 'proctor-event', event: 'gaze-off-screen', at: Date.now() }));
+              wsRef.current.send(JSON.stringify({ 
+                type: 'proctor-event', 
+                event: eventType, 
+                at: Date.now(),
+                movementDistance: totalMovement.toFixed(3),
+                warningCount: eyeMovementRef.current.warningCount
+              }));
             }
           }
         }
+        
+        // Update last position
+        eyeMovementRef.current.lastPosition = { x: nx, y: ny, timestamp: now };
       });
     } catch (e) {
       // If WebGazer fails, continue with FaceMesh-only logic
@@ -1436,15 +1556,34 @@ export default function VoiceInterviewPage() {
   }, [isInterviewActive]);
 
   const handleRulesAccepted = () => {
+    console.log('Rules accepted, preparing to start interview...');
     setRulesAccepted(true);
     setShowRulesModal(false);
-    // Tell backend to start AI immediately
-    try {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'start-interview' }));
-      }
-    } catch {}
+    rulesAcceptedRef.current = true;
+    
+    // Start the interview detection first
     startInterviewWithDetection();
+    
+    // Then ensure WebSocket message is sent when ready
+    const sendStartMessage = () => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('Sending start-interview message to backend');
+        wsRef.current.send(JSON.stringify({ type: 'start-interview' }));
+        
+        // Initialize audio element for autoplay permission
+        if (audioRef.current) {
+          audioRef.current.muted = false;
+          audioRef.current.volume = 1.0;
+          console.log('Audio element initialized for interview');
+        }
+      } else {
+        console.log('WebSocket not ready, retrying in 200ms...');
+        setTimeout(sendStartMessage, 200);
+      }
+    };
+    
+    // Small delay to ensure interview state is set
+    setTimeout(sendStartMessage, 100);
   };
 
   const startInterviewWithDetection = async () => {
@@ -1484,9 +1623,24 @@ export default function VoiceInterviewPage() {
       setEyesClosed(false);
       setProctorWarning(null);
       
+      // Reset eye movement tracking
+      eyeMovementRef.current = null;
+      wgOffCounterRef.current = 0;
+      wgEmaRef.current = { inited: false, x: 0, y: 0 };
+      
       // Start face detection loop
       await ensureTFReady();
-      startContinuousFaceDetection();
+      // Note: Main detection loop is already running via useEffect
+      // No need to start separate detection here
+      
+      // Start WebGazer for eye movement tracking
+      console.log('Starting WebGazer for eye movement detection...');
+      try {
+        await startWebGazer();
+        console.log('WebGazer started successfully');
+      } catch (error) {
+        console.error('Failed to start WebGazer:', error);
+      }
       
       // Request fullscreen
       setTimeout(async () => {
@@ -1900,6 +2054,21 @@ export default function VoiceInterviewPage() {
                         </div>
                       )}
                       
+                      {/* Eye Movement Status */}
+                      {isInterviewActive && usingWebGazer && eyeMovementRef.current && (
+                        <div className="absolute top-16 left-2 px-2 py-1 rounded-md text-xs font-medium bg-blue-600/80 text-white">
+                          <div>Movement: {(eyeMovementRef.current.movementDistance * 1000).toFixed(1)}/1000</div>
+                          <div className="text-xs">
+                            Threshold: 50 | Positions: {eyeMovementRef.current.positions.length}
+                          </div>
+                          {eyeMovementRef.current.warningCount > 0 && (
+                            <div className="text-yellow-200">
+                              ⚠️ Warnings: {eyeMovementRef.current.warningCount}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
                       {/* Gaze Direction Warning */}
                       {isLookingAway && eyeTrackingActive && (
                         <div className="absolute bottom-12 left-2 right-2 mx-auto w-fit px-3 py-1 rounded-md text-xs font-medium bg-red-600 text-white animate-pulse">
@@ -1908,7 +2077,7 @@ export default function VoiceInterviewPage() {
                       )}
                       
                       {/* Eye Position Indicators on Both Eyes */}
-                      {eyeTrackingActive && eyePositionsRef.current && (
+                      {eyeTrackingActive && eyePositionsRef.current ? (
                         <>
                           {/* Left Eye Indicator */}
                           <div 
@@ -1939,12 +2108,12 @@ export default function VoiceInterviewPage() {
                             }}
                           />
                         </>
-                      )}
+                      ) : null}
                       
                       {/* Gaze Point Indicator */}
-                      {eyeTrackingActive && gazeDataRef.current && (
-                        {/* Removed red dot indicator */}
-                      )}
+                      {eyeTrackingActive && gazeDataRef.current ? (
+                        null
+                      ) : null}
                       {/* Eye tracking status indicator */}
                       {eyeTrackingActive && (
                         <div className="absolute top-2 right-2 px-2 py-1 bg-green-600 text-white text-xs rounded-md flex items-center gap-1">
@@ -2001,6 +2170,28 @@ export default function VoiceInterviewPage() {
                         <PhoneOff className="w-5 h-5 mr-2" />
                         End Interview
                       </Button>
+                      
+                      {/* Test Eye Movement Warning - Development Only */}
+                      {process.env.NODE_ENV === 'development' && isInterviewActive && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setProctorWarning('🚨 TEST: Eye movement warning triggered!');
+                            setGazeOff(true);
+                            if (eyeMovementRef.current) {
+                              eyeMovementRef.current.warningCount++;
+                            }
+                            setTimeout(() => {
+                              setProctorWarning(null);
+                              setGazeOff(false);
+                            }, 3000);
+                          }}
+                          variant="outline"
+                          className="text-xs"
+                        >
+                          Test Warning
+                        </Button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -2041,7 +2232,7 @@ export default function VoiceInterviewPage() {
               </div>
             </div>
             {/* Hidden audio element for AI responses */}
-            <audio ref={audioRef} className="hidden" />
+            <audio ref={audioRef} className="hidden" autoPlay preload="auto" />
           </div>
         </div>
       )}
