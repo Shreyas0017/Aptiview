@@ -411,7 +411,7 @@ export default function LandingPageClient() {
                 <SignedIn>
                   <Button onClick={handleDashboardRedirect}>Go to Dashboard</Button>
                 </SignedIn>
-                <Link href="#demo" aria-label="Watch product demo">
+                <Link href="https://youtu.be/ee0YQgg7FKo" aria-label="Watch product demo">
                   <Button size="lg" variant="outline" className="font-semibold text-lg px-8 py-6 border-2 hover:bg-gray-50 bg-transparent dark:border-gray-700 dark:hover:bg-gray-800 dark:text-gray-100">
                     <Play className="mr-2 w-5 h-5" />
                     Watch Demo
