@@ -35,8 +35,82 @@ app.use(clerkMiddleware({
 // New media are uploaded to ImageKit and served via CDN URLs
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
+// Health check endpoint for ping bots and monitoring
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    service: 'Aptiview Backend',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Detailed health check with database connectivity test
+app.get('/health/detailed', async (req, res) => {
+  try {
+    // Test database connection
+    await prisma.$queryRaw`SELECT 1`;
+    
+    res.status(200).json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {
+        database: 'connected',
+        websocket: 'running',
+        server: 'running',
+        prisma: 'connected'
+      },
+      environment: process.env.NODE_ENV || 'development',
+      version: '1.0.0'
+    });
+  } catch (error) {
+    console.error('Health check failed:', error);
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {
+        database: 'disconnected',
+        server: 'running'
+      },
+      error: 'Database connection failed',
+      environment: process.env.NODE_ENV || 'development'
+    });
+  }
+});
+
+// Simple ping endpoint (minimal response for basic uptime monitoring)
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
+// Environment check endpoint for debugging deployment issues
+app.get('/env-check', (req, res) => {
+  const requiredEnvs = {
+    'DATABASE_URL': !!process.env.DATABASE_URL,
+    'OPENAI_API_KEY': !!process.env.OPENAI_API_KEY,
+    'CLERK_SECRET_KEY': !!process.env.CLERK_SECRET_KEY,
+    'CLERK_PUBLISHABLE_KEY': !!process.env.CLERK_PUBLISHABLE_KEY,
+    'FRONTEND_URL': !!process.env.FRONTEND_URL,
+    'IMAGEKIT_PUBLIC_KEY': !!process.env.IMAGEKIT_PUBLIC_KEY,
+    'IMAGEKIT_PRIVATE_KEY': !!process.env.IMAGEKIT_PRIVATE_KEY,
+    'IMAGEKIT_URL_ENDPOINT': !!process.env.IMAGEKIT_URL_ENDPOINT
+  };
+  
+  const missingEnvs = Object.entries(requiredEnvs)
+    .filter(([key, value]) => !value)
+    .map(([key]) => key);
+  
+  res.json({
+    status: missingEnvs.length === 0 ? 'OK' : 'MISSING_ENV_VARS',
+    envStatus: requiredEnvs,
+    missingEnvs,
+    nodeEnv: process.env.NODE_ENV || 'not_set',
+    port: process.env.PORT || 'not_set'
+  });
 });
 
 app.use('/api/users', userRoutes);

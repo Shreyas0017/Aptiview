@@ -13,7 +13,7 @@ const protectedPrefixes = [
   "/recruiter-profile-setup",
 ];
 
-function isProtectedPath(pathname) {
+function isProtectedPath(pathname: string | null | undefined) {
   return protectedPrefixes.some((prefix) => pathname?.startsWith(prefix));
 }
 

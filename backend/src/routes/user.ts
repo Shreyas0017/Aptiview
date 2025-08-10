@@ -1089,6 +1089,72 @@ router.get('/ai-templates', requireClerkAuth, async (req: ClerkAuthRequest, res:
   }
 });
 
+// Apply customized template to jobs
+router.post('/apply-template-to-jobs', requireClerkAuth, async (req: ClerkAuthRequest, res: Response) => {
+  try {
+    const userId = req.clerkUserId;
+    const { templateId, customization, jobIds } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Validate input
+    if (!templateId || !customization || !jobIds || !Array.isArray(jobIds)) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Get user profile
+    const user = await prisma.user.findUnique({
+      where: { clerkId: userId },
+      include: { recruiterProfile: true }
+    });
+
+    if (!user || user.role !== 'RECRUITER' || !user.recruiterProfile) {
+      return res.status(403).json({ error: 'Access denied. Recruiter profile required.' });
+    }
+
+    // Verify all jobs belong to the recruiter
+    const jobs = await prisma.job.findMany({
+      where: {
+        id: { in: jobIds },
+        recruiterId: user.recruiterProfile.id
+      }
+    });
+
+    if (jobs.length !== jobIds.length) {
+      return res.status(403).json({ error: 'Some jobs do not belong to this recruiter' });
+    }
+
+    // Use transaction to update all jobs
+    await prisma.$transaction(async (tx) => {
+      for (const jobId of jobIds) {
+        await tx.job.update({
+          where: { id: jobId },
+          data: {
+            aiTemplateId: templateId as string,
+            customInterviewContext: (customization.context as string) || null,
+            customQuestionsList: (customization.questions as string[]) || [],
+            scoringWeights: customization.scoring ? JSON.stringify(customization.scoring) : undefined,
+            interviewDuration: (customization.duration as number) || 20,
+            difficultyLevel: (customization.difficulty as string) || 'intermediate'
+          }
+        });
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: `Template applied to ${jobIds.length} job(s) successfully`,
+      updatedJobs: jobs.length
+    });
+
+  } catch (error) {
+    console.error('Error applying template to jobs:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get interview recordings for recruiter
 router.get('/interviews/:interviewId/recordings', requireClerkAuth, async (req: ClerkAuthRequest, res: Response) => {
   try {

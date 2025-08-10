@@ -43,20 +43,30 @@ enum Role {
 }
 
 model Job {
-  id                  String   @id @default(cuid())
-  title               String
-  description         String
-  recruiter           RecruiterProfile @relation(fields: [recruiterId], references: [id])
-  recruiterId         String
-  applications        Application[]
-  interviewQuestions  InterviewQuestion[]
-  interviewContext    String?
-  customQuestions     String?  // Custom questions for AI interviewer
-  interviewEndDate    DateTime?
-  screenshotInterval  Int      @default(30) // seconds
-  createdAt           DateTime @default(now())
-  location            String
-  type                String
+  id                        String   @id @default(cuid())
+  title                     String
+  description               String
+  recruiter                 RecruiterProfile @relation(fields: [recruiterId], references: [id])
+  recruiterId               String
+  applications              Application[]
+  interviewQuestions        InterviewQuestion[]
+  interviewContext          String?
+  customQuestions           String?  // Custom questions for AI interviewer (legacy)
+  
+  // Enhanced template customization fields
+  aiTemplateId              String?  // Reference to selected template
+  customInterviewContext    String?  // Custom context override
+  customQuestionsList       String[] @default([])  // Array of custom questions
+  scoringWeights            Json?    // JSON for scoring weights
+  interviewDuration         Int?     @default(20)  // Duration in minutes
+  difficultyLevel          String?   @default("intermediate") // beginner, intermediate, advanced
+  
+  interviewEndDate          DateTime?
+  screenshotInterval        Int      @default(30) // seconds
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @default(now()) @updatedAt
+  location                  String
+  type                      String
 }
 
 model InterviewQuestion {
