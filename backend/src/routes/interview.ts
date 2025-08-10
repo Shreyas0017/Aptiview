@@ -239,7 +239,19 @@ router.post('/:uniqueLink/start', async (req: Request, res: Response) => {
       }
     });
 
-  // Get AI welcome message
+    // Try to trigger the voice interviewer over WebSocket if a connection exists
+    try {
+      // Dynamically require to avoid circular import
+      const wsServer: any = require('../websocketServer');
+      if (wsServer && typeof wsServer.triggerVoiceStart === 'function') {
+        wsServer.triggerVoiceStart(uniqueLink);
+      }
+    } catch (e) {
+      console.warn('Could not trigger voice start via WebSocket:', e);
+      // Continue anyway; WS will auto-start when client connects due to interview.isActive
+    }
+
+    // Get AI welcome message for text-based fallback UI
   const resumeSummary = await getResumeSummary(interview.application.resumeUrl || undefined);
   const aiInterviewer = createAIInterviewer(interview.application.job, interview.application, resumeSummary);
     const welcomeResponse = await aiInterviewer.getNextQuestion();
